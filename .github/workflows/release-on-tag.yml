@@ -24,8 +24,13 @@ jobs:
             runner: macos-latest
 
     steps:
+      # Silences git's hint about the default branch name when checkout runs git init.
+      - name: Configure git
+        shell: bash
+        run: git config --global init.defaultBranch main
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Steam's runtime library ships in the release. It is taken from the Steamworks.NET
       # release for Steamworks SDK 1.65, whose copies are byte-identical to Valve's
@@ -64,8 +69,10 @@ jobs:
       - name: Configure CMake
         shell: bash
         run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
+          # Visual Studio builds pick the configuration at build time (--config) instead.
+          build_type=()
+          if [ "${{ runner.os }}" != Windows ]; then build_type=(-DCMAKE_BUILD_TYPE=Release); fi
+          cmake -S . -B build "${build_type[@]}" \
             -DSTEAM_API_LIBRARY="${{ steps.steam_api.outputs.path }}"
 
       - name: Build
@@ -88,7 +95,7 @@ jobs:
           Compress-Archive -Path build/dev.eglantine.remote-play-together -DestinationPath "dist/dev.eglantine.remote-play-together-windows-${{ github.ref_name }}.zip"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: remote-play-together-${{ matrix.os_name }}
           path: dist/*
@@ -100,12 +107,12 @@ jobs:
     needs: build
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
 
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/**/*
           generate_release_notes: true
