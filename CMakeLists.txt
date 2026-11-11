@@ -49,6 +49,10 @@ set_target_properties(remote-play-together PROPERTIES
     PREFIX ""
     OUTPUT_NAME remote_play_together
     CXX_VISIBILITY_PRESET hidden)
+if (APPLE)
+    # CMake names macOS modules .so; extension.json expects .dylib.
+    set_target_properties(remote-play-together PROPERTIES SUFFIX ".dylib")
+endif()
 
 # The extension folder: library, manifest and Steam's runtime library, which the extension loads
 # from its own folder.
