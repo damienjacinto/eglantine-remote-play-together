@@ -27,62 +27,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate Steamworks SDK URL secret
+      # Steam's runtime library ships in the release. It is taken from the Steamworks.NET
+      # release for Steamworks SDK 1.65, whose copies are byte-identical to Valve's
+      # redistributable_bin/; both the archive and the library are checked against pinned hashes.
+      - name: Download Steam runtime library
+        id: steam_api
         shell: bash
+        env:
+          ARCHIVE_URL: https://github.com/rlabrecque/Steamworks.NET/releases/download/2025.165.0/Steamworks.NET-Standalone_2025.165.0.zip
+          ARCHIVE_SHA256: 9b86dda48b257013a350c8fea87edf3ab3f6f8fd6a812563fddec73fb1189fee
         run: |
-          if [ -z "${{ secrets.STEAMWORKS_SDK_URL }}" ]; then
-            echo "Missing required repository secret: STEAMWORKS_SDK_URL"
-            exit 1
-          fi
-
-      - name: Download Steamworks SDK archive
-        shell: bash
-        run: curl -fL "${{ secrets.STEAMWORKS_SDK_URL }}" -o steamworks_sdk_archive
-
-      - name: Extract Steamworks SDK archive
-        shell: bash
-        run: |
-          python - <<'PY'
-          import pathlib
-          import tarfile
-          import zipfile
-
-          archive = pathlib.Path("steamworks_sdk_archive")
-          out = pathlib.Path("steamworks")
-          out.mkdir(parents=True, exist_ok=True)
-
-          if zipfile.is_zipfile(archive):
-            with zipfile.ZipFile(archive) as zf:
-              zf.extractall(out)
-          elif tarfile.is_tarfile(archive):
-            with tarfile.open(archive) as tf:
-              tf.extractall(out)
-          else:
-            raise SystemExit("Unsupported SDK archive format. Use .zip, .tar.gz, or .tgz")
-          PY
-
-      - name: Resolve Steamworks SDK directory
-        id: steam_sdk
-        shell: bash
-        run: |
-          sdk_public_dir="$(find "$(pwd)/steamworks" -type d -name public -print -quit)"
-          if [ -z "$sdk_public_dir" ]; then
-            echo "Could not find Steamworks SDK public/ directory."
-            exit 1
-          fi
-          sdk_dir="$(dirname "$sdk_public_dir")"
-          if [ -z "$sdk_dir" ] || [ ! -d "$sdk_dir/redistributable_bin" ]; then
-            echo "Could not find Steamworks SDK root (expected public/ and redistributable_bin/)."
-            exit 1
-          fi
-          echo "sdk_dir=$sdk_dir" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            Windows)
+              library=Windows-x64/steam_api64.dll
+              library_sha256=e6d9bafb9a41e42fba7b21553db49f8719027af3f0deb23ff86cfc44d60e776d ;;
+            macOS)
+              library=OSX-Linux-x64/steam_api.bundle/Contents/MacOS/libsteam_api.dylib
+              library_sha256=a37faf19675b943a3c9717d25d9a881f5addb7f0ee728e03de7aac143ba759d2 ;;
+            *)
+              library=OSX-Linux-x64/libsteam_api.so
+              library_sha256=eb2dd015b84177cf4f4326fe578aab375fd8931bbbd719c7492420d9777007fe ;;
+          esac
+          check() {
+            if command -v sha256sum > /dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi
+          }
+          mkdir -p steam_api && cd steam_api
+          curl -fsSL "$ARCHIVE_URL" -o archive.zip
+          echo "$ARCHIVE_SHA256  archive.zip" | check
+          cmake -E tar xf archive.zip
+          echo "$library_sha256  $library" | check
+          dir="$(pwd)"
+          if [ "${{ runner.os }}" = Windows ]; then dir="$(cygpath -m "$dir")"; fi
+          echo "path=$dir/$library" >> "$GITHUB_OUTPUT"
 
       - name: Configure CMake
         shell: bash
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DSTEAMWORKS_SDK_DIR="${{ steps.steam_sdk.outputs.sdk_dir }}"
+            -DSTEAM_API_LIBRARY="${{ steps.steam_api.outputs.path }}"
 
       - name: Build
         shell: bash

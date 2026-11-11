@@ -12,33 +12,39 @@ Steam code: this extension is loaded at runtime through Eglantine's extension AP
 
 - Eglantine built with extension support (`ENABLE_EXTENSIONS`, the `extensions` branch of
   [damienjacinto/Eglantine](https://github.com/damienjacinto/Eglantine)).
-- The [Steamworks SDK](https://partner.steamgames.com/downloads/list) 1.62 or later, to build. It
-  is not included here: Valve does not allow redistributing it.
 - Steam running and signed in, with an account that **owns the App ID** Eglantine runs as.
+
+The [release archives](../../releases) include everything else, including Steam's runtime library
+(`steam_api64.dll`, `libsteam_api.so` or `libsteam_api.dylib`, from Steamworks SDK 1.65).
 
 ## Build
 
+Building needs only CMake and a C++20 compiler: the Steamworks SDK is not used. The extension
+declares the few functions of Steam's flat C API it calls ([steam_runtime.h](steam_runtime.h)) and
+loads Steam's runtime library from its own folder when Eglantine starts.
+
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSTEAMWORKS_SDK_DIR=/path/to/steamworks_sdk/sdk
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSTEAM_API_LIBRARY=/path/to/libsteam_api.so
 cmake --build build
 ```
 
 This produces `build/dev.eglantine.remote-play-together/` with the extension, its
-`extension.json` and Steam's runtime library (`libsteam_api.so`, `steam_api64.dll` or
-`libsteam_api.dylib`).
+`extension.json` and, when `STEAM_API_LIBRARY` is set, Steam's runtime library. That library must
+come from Steamworks SDK 1.65 or later: take it from a release archive, from the SDK's
+`redistributable_bin/` (or pass `-DSTEAMWORKS_SDK_DIR=/path/to/sdk` instead), or from the
+[Steamworks.NET 2025.165.0](https://github.com/rlabrecque/Steamworks.NET/releases/tag/2025.165.0)
+standalone archive, whose copies are identical to Valve's. Without it the build still succeeds,
+and the extension reports the library as missing at startup.
 
 Placed as `extensions/remote_play_together` inside an Eglantine source tree, it is built with
 Eglantine instead and copied next to the executable.
 
 ## GitHub Releases (tags)
 
-This repository includes a GitHub Actions workflow that builds release artifacts for Linux, Windows
-and macOS when a tag is pushed, then publishes a GitHub Release with those artifacts.
-
-Because Valve does not allow redistributing the Steamworks SDK, the workflow expects a repository
-secret named `STEAMWORKS_SDK_URL` that points to a downloadable `.zip`, `.tar.gz` or `.tgz`
-archive containing the Steamworks SDK (the folder that has `public/` and
-`redistributable_bin/`).
+Pushing a tag builds the extension for Linux, Windows and macOS and publishes a GitHub Release
+with one archive per platform. No secret is needed: the workflow downloads Steam's runtime library
+from the pinned Steamworks.NET release and checks it against the SHA-256 of Valve's SDK 1.65 copy
+before bundling it.
 
 ## Install and use
 
@@ -61,6 +67,9 @@ These assignments are temporary: they never change your saved controller setting
 When Steam cannot be used, the extension says why at startup, and **Remote Play Together: Steam is
 not available, details...** in the Multiplayer menu shows it again.
 
+- **"Steam's runtime library is missing or too old"**: the folder lacks `steam_api64.dll` /
+  `libsteam_api.so` / `libsteam_api.dylib`, or it predates SDK 1.65. Reinstall the folder from a
+  release archive.
 - **"ConnectToGlobalUser failed"**: the account does not own the App ID. Add the game to the
   library (free games too, with Play or Install on the store page), restart Steam, then Eglantine.
 - **Steam not found on Linux**: the Snap and Flatpak versions of Steam are sandboxed and cannot be
@@ -74,5 +83,5 @@ not available, details...** in the Multiplayer menu shows it again.
 ## License
 
 GPL-3.0-or-later, see [LICENSE](LICENSE). `include/eglantine/extension.h` is a copy of Eglantine's
-public extension header. The Steamworks SDK and Steam's runtime libraries are Valve's and are not
-part of this repository.
+public extension header. Steam's runtime libraries are Valve's: they are not part of this
+repository, only bundled in the release archives as Steamworks' redistributables.
