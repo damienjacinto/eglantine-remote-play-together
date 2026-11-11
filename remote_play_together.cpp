@@ -11,6 +11,7 @@
 // the host's and are left alone.
 
 #include <algorithm>
+#include <cstring>
 #include <cstdlib>
 #include <map>
 #include <memory>
@@ -19,7 +20,7 @@
 #include <vector>
 
 #include <eglantine/extension.h>
-#include <steam/steam_api.h>
+#include "steam_runtime.h"
 
 namespace {
 
@@ -36,8 +37,14 @@ const EglCoreApi* core;
 const EglUiApi* ui;
 const EglInputApi* input;
 
+steam::Api steam_api;
+void* remote_play;
+void* friends;
+steam::HSteamPipe steam_pipe;
+bool library_loaded;
+bool steam_started;
 bool steam_ready;
-ESteamAPIInitResult steam_result{k_ESteamAPIInitResult_OK};
+steam::InitResult steam_result{steam::InitOk};
 std::string steam_error;
 std::string app_id;
 
@@ -92,7 +99,7 @@ struct Guest {
 class Session {
 public:
     Session() {
-        direct_input = SteamRemotePlay()->BEnableRemotePlayTogetherDirectInput();
+        direct_input = steam_api.BEnableRemotePlayTogetherDirectInput(remote_play);
         if (!direct_input) {
             Log(EGL_LOG_WARNING, "Steam refused direct input: guest keyboards will type on the "
                                  "host's keyboard");
@@ -106,7 +113,7 @@ public:
             RemoveGuest(guests.begin()->first);
         }
         if (direct_input) {
-            SteamRemotePlay()->DisableRemotePlayTogetherDirectInput();
+            steam_api.DisableRemotePlayTogetherDirectInput(remote_play);
         }
     }
 
@@ -114,7 +121,7 @@ public:
     Session& operator=(const Session&) = delete;
 
     void Tick() {
-        SteamAPI_RunCallbacks();
+        RunCallbacks();
         ReadInput();
         if (++ticks % TicksPerSessionSync == 0) {
             SyncSessions();
@@ -122,7 +129,7 @@ public:
     }
 
     void Invite() {
-        if (!SteamRemotePlay()->ShowRemotePlayTogetherUI()) {
+        if (!steam_api.ShowRemotePlayTogetherUI(remote_play)) {
             ui->show_message(host->context, EGL_MESSAGE_WARNING, "Remote Play Together",
                              "The Steam overlay could not be opened. Check that the overlay is "
                              "enabled in Steam, or copy a guest link instead.");
@@ -131,7 +138,7 @@ public:
 
     void RequestLink() {
         // An invalid friend id asks Steam for a link anyone can open.
-        if (!SteamRemotePlay()->BSendRemotePlayTogetherInvite(CSteamID())) {
+        if (!steam_api.BSendRemotePlayTogetherInvite(remote_play, 0)) {
             ui->show_message(host->context, EGL_MESSAGE_WARNING, "Remote Play Together",
                              "Steam did not create a guest link.");
         }
@@ -210,19 +217,47 @@ public:
     }
 
 private:
-    STEAM_CALLBACK(Session, OnConnected, SteamRemotePlaySessionConnected_t);
-    STEAM_CALLBACK(Session, OnDisconnected, SteamRemotePlaySessionDisconnected_t);
-    STEAM_CALLBACK(Session, OnGuestInvite, SteamRemotePlayTogetherGuestInvite_t);
+    void RunCallbacks() {
+        steam_api.ManualDispatch_RunFrame(steam_pipe);
+        steam::CallbackMsg message{};
+        while (steam_api.ManualDispatch_GetNextCallback(steam_pipe, &message)) {
+            const auto* param = message.param;
+            const auto size = static_cast<std::size_t>(message.param_size);
+            if (message.callback == steam::SessionConnectedId &&
+                size >= sizeof(steam::SessionConnected)) {
+                AddGuest(reinterpret_cast<const steam::SessionConnected*>(param)->session);
+            } else if (message.callback == steam::SessionDisconnectedId &&
+                       size >= sizeof(steam::SessionDisconnected)) {
+                RemoveGuest(reinterpret_cast<const steam::SessionDisconnected*>(param)->session);
+            } else if (message.callback == steam::GuestInviteId &&
+                       size >= sizeof(steam::GuestInvite)) {
+                const auto* invite = reinterpret_cast<const steam::GuestInvite*>(param);
+                OnGuestInvite(std::string{invite->connect_url,
+                                          ::strnlen(invite->connect_url,
+                                                    sizeof(invite->connect_url))});
+            }
+            steam_api.ManualDispatch_FreeLastCallback(steam_pipe);
+        }
+    }
 
-    void AddGuest(RemotePlaySessionID_t session) {
+    void OnGuestInvite(const std::string& url) {
+        ui->set_clipboard_text(host->context, url.c_str());
+        const std::string text = "The guest link was copied to the clipboard:\n\n" + url;
+        ui->show_message(host->context, EGL_MESSAGE_INFO, "Remote Play Together", text.c_str());
+    }
+
+    void AddGuest(steam::RemotePlaySessionId session) {
         if (guests.contains(session)) {
             return;
         }
         Guest guest;
         guest.order = next_order++;
         const char* persona =
-            SteamFriends()->GetFriendPersonaName(SteamRemotePlay()->GetSessionSteamID(session));
-        const char* client = SteamRemotePlay()->GetSessionClientName(session);
+            friends != nullptr
+                ? steam_api.GetFriendPersonaName(
+                      friends, steam_api.GetSessionSteamID(remote_play, session))
+                : nullptr;
+        const char* client = steam_api.GetSessionClientName(remote_play, session);
         guest.name = persona != nullptr && persona[0] != '\0' ? persona
                      : client != nullptr                     ? client
                                                              : "Guest";
@@ -231,13 +266,13 @@ private:
         guest.keyboard = input->create_device(host->context, EGL_DEVICE_KEYBOARD,
                                               keyboard_name.c_str());
         // The guest plays with the emulated controller, not with a host mouse cursor.
-        SteamRemotePlay()->SetMouseVisibility(session, false);
+        steam_api.SetMouseVisibility(remote_play, session, false);
         Log(EGL_LOG_INFO, guest.name + " joined");
         guests.emplace(session, std::move(guest));
         AssignPads();
     }
 
-    void RemoveGuest(RemotePlaySessionID_t session) {
+    void RemoveGuest(steam::RemotePlaySessionId session) {
         const auto it = guests.find(session);
         if (it == guests.end()) {
             return;
@@ -258,12 +293,12 @@ private:
     }
 
     void SyncSessions() {
-        std::set<RemotePlaySessionID_t> current;
-        const auto count = SteamRemotePlay()->GetSessionCount();
+        std::set<steam::RemotePlaySessionId> current;
+        const auto count = steam_api.GetSessionCount(remote_play);
         for (std::uint32_t i = 0; i < count; ++i) {
-            current.insert(SteamRemotePlay()->GetSessionID(static_cast<int>(i)));
+            current.insert(steam_api.GetSessionID(remote_play, static_cast<int>(i)));
         }
-        std::vector<RemotePlaySessionID_t> gone;
+        std::vector<steam::RemotePlaySessionId> gone;
         for (const auto& [session, guest] : guests) {
             if (!current.contains(session)) {
                 gone.push_back(session);
@@ -278,23 +313,23 @@ private:
     }
 
     void ReadInput() {
-        RemotePlayInput_t events[32];
+        steam::RemotePlayInput events[32];
         while (true) {
-            const auto count = SteamRemotePlay()->GetInput(events, 32);
+            const auto count = steam_api.GetInput(remote_play, events, 32);
             for (std::uint32_t i = 0; i < count; ++i) {
                 const auto& event = events[i];
-                const bool down = event.m_eType == k_ERemotePlayInputKeyDown;
-                if (!down && event.m_eType != k_ERemotePlayInputKeyUp) {
+                const bool down = event.type == steam::InputKeyDown;
+                if (!down && event.type != steam::InputKeyUp) {
                     continue;
                 }
-                const auto it = guests.find(event.m_unSessionID);
+                const auto it = guests.find(event.session);
                 if (it == guests.end() || it->second.keyboard == 0) {
                     continue;
                 }
                 auto& guest = it->second;
                 // Remote Play scancodes are USB HID usages.
                 input->set_key(host->context, guest.keyboard,
-                               static_cast<std::uint32_t>(event.m_Key.m_eScancode), down ? 1 : 0);
+                               static_cast<std::uint32_t>(event.key.scancode), down ? 1 : 0);
                 if (down && guest.keyboard_player < 0 && guest.pad_player < 0) {
                     AssignKeyboard(guest);
                 }
@@ -329,28 +364,13 @@ private:
         ui->set_status_item_text(host->context, status_item, text.c_str());
     }
 
-    std::map<RemotePlaySessionID_t, Guest> guests;
+    std::map<steam::RemotePlaySessionId, Guest> guests;
     std::set<std::string> host_pads;
     std::uint64_t status_item{};
     std::uint64_t next_order{};
     std::uint32_t ticks{};
     bool direct_input{};
 };
-
-void Session::OnConnected(SteamRemotePlaySessionConnected_t* event) {
-    AddGuest(event->m_unSessionID);
-}
-
-void Session::OnDisconnected(SteamRemotePlaySessionDisconnected_t* event) {
-    RemoveGuest(event->m_unSessionID);
-}
-
-void Session::OnGuestInvite(SteamRemotePlayTogetherGuestInvite_t* event) {
-    ui->set_clipboard_text(host->context, event->m_szConnectURL);
-    const std::string text = std::string{"The guest link was copied to the clipboard:\n\n"} +
-                             event->m_szConnectURL;
-    ui->show_message(host->context, EGL_MESSAGE_INFO, "Remote Play Together", text.c_str());
-}
 
 std::unique_ptr<Session> session;
 
@@ -378,13 +398,17 @@ void OnChangeAppId(void*) {
 /// Why Steam cannot be used, in words a user can act on.
 std::string ExplainFailure() {
     std::string text;
-    if (steam_result == k_ESteamAPIInitResult_NoSteamClient) {
+    if (!library_loaded) {
+        text = std::string{"Steam's runtime library ("} + steam::LibraryName +
+               ") is missing or too old. Reinstall the extension from its release archive, "
+               "which includes it, then restart Eglantine.";
+    } else if (steam_result == steam::InitNoSteamClient) {
         text = "Steam is not running. Start Steam, sign in, then restart Eglantine.\n\n"
                "On Linux, use the Steam package from Valve or your distribution: the Snap and "
                "Flatpak versions run in a sandbox that other programs cannot reach.";
-    } else if (steam_result == k_ESteamAPIInitResult_VersionMismatch) {
+    } else if (steam_result == steam::InitVersionMismatch) {
         text = "Steam is out of date. Let Steam update, then restart Eglantine.";
-    } else if (steam_result == k_ESteamAPIInitResult_OK) {
+    } else if (steam_result == steam::InitOk) {
         text = "This Steam version has no Remote Play support. Update Steam, then restart "
                "Eglantine.";
     } else {
@@ -452,14 +476,24 @@ EGL_EXPORT int egl_extension_preinit(const EglHost* early_host) {
     SetEnvIfUnset("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD", "1");
 
     // Before any graphics device exists, so the Steam overlay can attach to the renderer.
-    SteamErrMsg error{};
-    steam_result = SteamAPI_InitEx(&error);
-    if (steam_result == k_ESteamAPIInitResult_OK && SteamRemotePlay() != nullptr) {
+    library_loaded = steam::Load(steam_api, steam_error);
+    if (library_loaded) {
+        steam::ErrorMessage error{};
+        steam_result = steam_api.Init(steam::RequiredInterfaces, &error);
+        steam_started = steam_result == steam::InitOk;
+        if (steam_started) {
+            steam_api.ManualDispatch_Init();
+            steam_pipe = steam_api.GetHSteamPipe();
+            remote_play = steam_api.SteamRemotePlay();
+            friends = steam_api.SteamFriends();
+        }
+        steam_error.assign(error, ::strnlen(error, sizeof(error)));
+    }
+    if (steam_started && remote_play != nullptr) {
         steam_ready = true;
         early_core->log(early_host->context, EGL_LOG_INFO,
                         ("Steam started as App ID " + app_id).c_str());
     } else {
-        steam_error = error;
         early_core->log(early_host->context, EGL_LOG_WARNING,
                         ("Steam is not available: " + steam_error).c_str());
     }
@@ -495,7 +529,7 @@ EGL_EXPORT int egl_extension_init(const EglHost* host_) {
     AddMenus();
     if (!steam_ready) {
         // Tell the user once per cause, after the main window is up, not on every launch.
-        const auto cause = std::to_string(steam_result) + ':' + app_id + ':' + steam_error;
+        const auto cause = std::to_string(library_loaded ? steam_result : -1) + ':' + app_id + ':' + steam_error;
         if (GetSetting(*core, *host, "reported_failure", "") != cause) {
             core->set_setting(host->context, "reported_failure", cause.c_str());
             core->post_to_ui(host->context, ShowFailure, nullptr);
@@ -508,8 +542,9 @@ EGL_EXPORT int egl_extension_init(const EglHost* host_) {
 
 EGL_EXPORT void egl_extension_shutdown(void) {
     session.reset();
-    if (steam_result == k_ESteamAPIInitResult_OK) {
-        SteamAPI_Shutdown();
+    if (steam_started) {
+        steam_api.Shutdown();
     }
+    steam_started = false;
     steam_ready = false;
 }
