@@ -30,6 +30,16 @@ This produces `build/dev.eglantine.remote-play-together/` with the extension, it
 Placed as `extensions/remote_play_together` inside an Eglantine source tree, it is built with
 Eglantine instead and copied next to the executable.
 
+## GitHub Releases (tags)
+
+This repository includes a GitHub Actions workflow that builds release artifacts for Linux, Windows
+and macOS when a tag is pushed, then publishes a GitHub Release with those artifacts.
+
+Because Valve does not allow redistributing the Steamworks SDK, the workflow expects a repository
+secret named `STEAMWORKS_SDK_URL` that points to a downloadable `.zip`, `.tar.gz` or `.tgz`
+archive containing the Steamworks SDK (the folder that has `public/` and
+`redistributable_bin/`).
+
 ## Install and use
 
 1. Copy the `dev.eglantine.remote-play-together` folder into Eglantine's extensions folder:

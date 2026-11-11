@@ -1,0 +1,127 @@
+name: Release on tag
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os_name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_name: linux
+            runner: ubuntu-latest
+          - os_name: windows
+            runner: windows-latest
+          - os_name: macos
+            runner: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Steamworks SDK URL secret
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.STEAMWORKS_SDK_URL }}" ]; then
+            echo "Missing required repository secret: STEAMWORKS_SDK_URL"
+            exit 1
+          fi
+
+      - name: Download Steamworks SDK archive
+        shell: bash
+        run: curl -fL "${{ secrets.STEAMWORKS_SDK_URL }}" -o steamworks_sdk_archive
+
+      - name: Extract Steamworks SDK archive
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib
+          import tarfile
+          import zipfile
+
+          archive = pathlib.Path("steamworks_sdk_archive")
+          out = pathlib.Path("steamworks")
+          out.mkdir(parents=True, exist_ok=True)
+
+          if zipfile.is_zipfile(archive):
+            with zipfile.ZipFile(archive) as zf:
+              zf.extractall(out)
+          elif tarfile.is_tarfile(archive):
+            with tarfile.open(archive) as tf:
+              tf.extractall(out)
+          else:
+            raise SystemExit("Unsupported SDK archive format. Use .zip, .tar.gz, or .tgz")
+          PY
+
+      - name: Resolve Steamworks SDK directory
+        id: steam_sdk
+        shell: bash
+        run: |
+          sdk_public_dir="$(find "$(pwd)/steamworks" -type d -name public -print -quit)"
+          if [ -z "$sdk_public_dir" ]; then
+            echo "Could not find Steamworks SDK public/ directory."
+            exit 1
+          fi
+          sdk_dir="$(dirname "$sdk_public_dir")"
+          if [ -z "$sdk_dir" ] || [ ! -d "$sdk_dir/redistributable_bin" ]; then
+            echo "Could not find Steamworks SDK root (expected public/ and redistributable_bin/)."
+            exit 1
+          fi
+          echo "sdk_dir=$sdk_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Configure CMake
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSTEAMWORKS_SDK_DIR="${{ steps.steam_sdk.outputs.sdk_dir }}"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release
+
+      - name: Package artifact (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -czf "dist/dev.eglantine.remote-play-together-${{ matrix.os_name }}-${{ github.ref_name }}.tar.gz" \
+            -C build dev.eglantine.remote-play-together
+
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path build/dev.eglantine.remote-play-together -DestinationPath "dist/dev.eglantine.remote-play-together-windows-${{ github.ref_name }}.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-play-together-${{ matrix.os_name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
