@@ -24,7 +24,6 @@
 
 namespace {
 
-constexpr const char* DefaultAppId = "480";
 constexpr const char* MenuPrefix = "Remote Play Together: ";
 constexpr std::uint16_t SteamVendorId = 0x28DE;
 constexpr std::uint16_t SteamVirtualGamepadId = 0x11FF;
@@ -375,17 +374,23 @@ private:
 std::unique_ptr<Session> session;
 
 void OnChangeAppId(void*) {
-    const auto saved = GetSetting(*core, *host, "app_id", DefaultAppId);
+    const auto saved = GetSetting(*core, *host, "app_id", "");
     ui->prompt_text(
         host->context, "Steam App ID",
-        "Steam App ID to run as. Guests need to own this game or have it free. Takes effect "
-        "after a restart.",
+        "Required Steam App ID to run as. Your Steam account must own this game (or it must be "
+        "free). Leave empty to clear. Takes effect after a restart.",
         saved.c_str(),
         [](void*, const char* value) {
             const std::string text{value};
+            if (text.empty()) {
+                core->set_setting(host->context, "app_id", nullptr);
+                ui->show_message(host->context, EGL_MESSAGE_INFO, "Steam App ID",
+                                 "Steam App ID cleared. Set a new App ID and restart Eglantine.");
+                return;
+            }
             if (!IsAppId(text)) {
                 ui->show_message(host->context, EGL_MESSAGE_WARNING, "Steam App ID",
-                                 "An App ID is a number, for example 480.");
+                                 "An App ID is a number, for example 1118310 (RetroArch).");
                 return;
             }
             core->set_setting(host->context, "app_id", text.c_str());
@@ -398,7 +403,11 @@ void OnChangeAppId(void*) {
 /// Why Steam cannot be used, in words a user can act on.
 std::string ExplainFailure() {
     std::string text;
-    if (!library_loaded) {
+    if (app_id.empty()) {
+        text = "No Steam App ID is set. Choose one with Multiplayer > Remote Play Together: Steam "
+               "App ID. Your Steam account must own that game (or it must be free), and it should "
+               "support multiplayer and Remote Play Together.";
+    } else if (!library_loaded) {
         text = std::string{"Steam's runtime library ("} + steam::LibraryName +
                ") is missing or too old. Reinstall the extension from its release archive, "
                "which includes it, then restart Eglantine.";
@@ -447,8 +456,10 @@ void AddMenus() {
     }
     ui->add_menu_item(
         host->context, EGL_MENU_MULTIPLAYER,
-        (std::string{MenuPrefix} + "Steam App ID (" + app_id + ")...").c_str(), OnChangeAppId,
-        nullptr);
+        (std::string{MenuPrefix} +
+         "Steam App ID (" + (app_id.empty() ? std::string{"required"} : app_id) + ")...")
+            .c_str(),
+        OnChangeAppId, nullptr);
 }
 
 } // namespace
@@ -468,26 +479,30 @@ EGL_EXPORT int egl_extension_preinit(const EglHost* early_host) {
     if (const char* from_steam = std::getenv("SteamAppId"); from_steam != nullptr) {
         app_id = from_steam;
     } else {
-        app_id = GetSetting(*early_core, *early_host, "app_id", DefaultAppId);
-        SetEnvIfUnset("SteamAppId", app_id);
-        SetEnvIfUnset("SteamGameId", app_id);
+        app_id = GetSetting(*early_core, *early_host, "app_id", "");
+        if (!app_id.empty()) {
+            SetEnvIfUnset("SteamAppId", app_id);
+            SetEnvIfUnset("SteamGameId", app_id);
+        }
     }
     // SDL hides Steam's virtual gamepads unless told otherwise, and those are the guests' pads.
     SetEnvIfUnset("SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD", "1");
 
     // Before any graphics device exists, so the Steam overlay can attach to the renderer.
-    library_loaded = steam::Load(steam_api, steam_error);
-    if (library_loaded) {
-        steam::ErrorMessage error{};
-        steam_result = steam_api.Init(steam::RequiredInterfaces, &error);
-        steam_started = steam_result == steam::InitOk;
-        if (steam_started) {
-            steam_api.ManualDispatch_Init();
-            steam_pipe = steam_api.GetHSteamPipe();
-            remote_play = steam_api.SteamRemotePlay();
-            friends = steam_api.SteamFriends();
+    if (!app_id.empty()) {
+        library_loaded = steam::Load(steam_api, steam_error);
+        if (library_loaded) {
+            steam::ErrorMessage error{};
+            steam_result = steam_api.Init(steam::RequiredInterfaces, &error);
+            steam_started = steam_result == steam::InitOk;
+            if (steam_started) {
+                steam_api.ManualDispatch_Init();
+                steam_pipe = steam_api.GetHSteamPipe();
+                remote_play = steam_api.SteamRemotePlay();
+                friends = steam_api.SteamFriends();
+            }
+            steam_error.assign(error, ::strnlen(error, sizeof(error)));
         }
-        steam_error.assign(error, ::strnlen(error, sizeof(error)));
     }
     if (steam_started && remote_play != nullptr) {
         steam_ready = true;
@@ -511,7 +526,7 @@ EGL_EXPORT int egl_extension_init(const EglHost* host_) {
         return 1;
     }
     if (app_id.empty()) {
-        app_id = GetSetting(*core, *host, "app_id", DefaultAppId);
+        app_id = GetSetting(*core, *host, "app_id", "");
     }
 
     if (steam_ready) {

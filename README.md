@@ -53,8 +53,10 @@ before bundling it.
    (`user/extensions/` for portable builds).
 2. In Eglantine, open **Extensions > Manage Extensions...**, enable **Steam Remote Play Together**,
    and restart: the extension starts Steam before the main window, so the overlay can attach.
-3. Set the game to run as with **Multiplayer > Remote Play Together: Steam App ID...** (480 by
-   default) and restart again.
+3. Set the game to run as with **Multiplayer > Remote Play Together: Steam App ID...** and restart
+   again.
+   Use a Steam App ID that you own or are expressly authorized to use, configured for Remote Play
+   Together. Prefer a game with multiplayer support; for example, RetroArch (`1118310`).
 4. Use **Multiplayer > Remote Play Together: Invite Friends...** (Steam overlay) or
    **Copy Guest Link** (a link guests open in a browser or Steam Link, no friendship needed).
 
