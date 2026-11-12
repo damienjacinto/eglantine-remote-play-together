@@ -6,6 +6,7 @@
     "description": "Play local multiplayer games with Steam friends over Remote Play Together. Guests' gamepads and keyboards become players 2 to 8. Needs Steam running and signed in, with an account that owns the chosen App ID.",
     "api_version": 1,
     "permissions": ["early-start", "ui", "input"],
+    "about": "ABOUT.md",
     "library": {
         "windows": "remote_play_together.dll",
         "linux": "remote_play_together.so",

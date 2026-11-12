@@ -54,7 +54,7 @@ if (APPLE)
     set_target_properties(remote-play-together PROPERTIES SUFFIX ".dylib")
 endif()
 
-# The extension folder: library, manifest and Steam's runtime library, which the extension loads
+# The extension folder: library, manifest, about text and Steam's runtime library, which the extension loads
 # from its own folder.
 if (TARGET yuzu)
     set(destination "$<TARGET_FILE_DIR:yuzu>/extensions/${id}")
@@ -65,6 +65,7 @@ add_custom_command(TARGET remote-play-together POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${destination}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:remote-play-together>" "${destination}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/extension.json" "${destination}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/ABOUT.md" "${destination}"
     VERBATIM)
 if (STEAM_API_LIBRARY)
     add_custom_command(TARGET remote-play-together POST_BUILD

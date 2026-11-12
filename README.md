@@ -29,7 +29,7 @@ cmake --build build
 ```
 
 This produces `build/dev.eglantine.remote-play-together/` with the extension, its
-`extension.json` and, when `STEAM_API_LIBRARY` is set, Steam's runtime library. That library must
+`extension.json`, `ABOUT.md` (shown by the extension's **About** button) and, when `STEAM_API_LIBRARY` is set, Steam's runtime library. That library must
 come from Steamworks SDK 1.65 or later: take it from a release archive, from the SDK's
 `redistributable_bin/` (or pass `-DSTEAMWORKS_SDK_DIR=/path/to/sdk` instead), or from the
 [Steamworks.NET 2025.165.0](https://github.com/rlabrecque/Steamworks.NET/releases/tag/2025.165.0)
